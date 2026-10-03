@@ -123,6 +123,11 @@ declare global {
       'player.isMute': boolean
 
       /**
+       * 播放/暂停时音量是否渐入渐出
+       */
+      'player.isVolumeFade': boolean
+
+      /**
        * 播放速率
        */
       'player.playbackRate': number

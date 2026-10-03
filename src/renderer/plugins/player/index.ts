@@ -185,6 +185,50 @@ let pitchShifterNodeTempValue = 1
 let defaultChannelCount = 2
 export const soundR = 0.5
 
+// 播放/暂停音量渐变
+const FADE_DURATION = 300
+const FADE_INTERVAL = 10
+let targetVolume = 1
+let fadeTimer: ReturnType<typeof setInterval> | null = null
+let isFadeInPending = false
+let isVolumeFadeEnabled = true
+
+const clearFade = () => {
+  if (fadeTimer == null) return
+  clearInterval(fadeTimer)
+  fadeTimer = null
+}
+
+const fadeVolume = (to: number, onEnd?: () => void) => {
+  if (!audio) return
+  clearFade()
+  const from = audio.volume
+  if (from == to) {
+    onEnd?.()
+    return
+  }
+  const startTime = performance.now()
+  fadeTimer = setInterval(() => {
+    if (!audio) {
+      clearFade()
+      return
+    }
+    const progress = Math.min((performance.now() - startTime) / FADE_DURATION, 1)
+    audio.volume = from + (to - from) * progress
+    if (progress < 1) return
+    clearFade()
+    onEnd?.()
+  }, FADE_INTERVAL)
+}
+
+export const setVolumeFadeEnabled = (enabled: boolean) => {
+  isVolumeFadeEnabled = enabled
+  if (enabled) return
+  clearFade()
+  isFadeInPending = false
+  if (audio && !audio.paused) audio.volume = targetVolume
+}
+
 export const createAudio = () => {
   if (audio) return
   audio = new window.Audio() as HTMLAudioElementChrome
@@ -192,6 +236,11 @@ export const createAudio = () => {
   audio.autoplay = true
   audio.preload = 'auto'
   audio.crossOrigin = 'anonymous'
+  audio.addEventListener('playing', () => {
+    if (!isFadeInPending) return
+    isFadeInPending = false
+    fadeVolume(targetVolume)
+  })
 }
 
 const initAnalyser = () => {
@@ -521,22 +570,53 @@ export const setPitchShifter = (val: number) => {
 export const hasInitedAdvancedAudioFeatures = (): boolean => audioContext != null
 
 export const setResource = (src: string) => {
-  if (audio) audio.src = src
+  if (!audio) return
+  clearFade()
+  if (isVolumeFadeEnabled) {
+    audio.volume = 0
+    isFadeInPending = true
+  }
+  audio.src = src
 }
 
 export const setPlay = () => {
-  void audio?.play()
+  if (!audio) return
+  if (!audio.paused) {
+    // 暂停渐出未结束又重新播放时直接渐入
+    isFadeInPending = false
+    if (isVolumeFadeEnabled) fadeVolume(targetVolume)
+    else audio.volume = targetVolume
+    return
+  }
+  clearFade()
+  if (isVolumeFadeEnabled) {
+    audio.volume = 0
+    isFadeInPending = true
+  } else {
+    isFadeInPending = false
+    audio.volume = targetVolume
+  }
+  void audio.play()
 }
 
 export const setPause = () => {
-  audio?.pause()
+  if (!audio || audio.paused) return
+  if (!isVolumeFadeEnabled) {
+    audio.pause()
+    return
+  }
+  isFadeInPending = false
+  fadeVolume(0, () => {
+    audio?.pause()
+  })
 }
 
 export const setStop = () => {
-  if (audio) {
-    audio.src = ''
-    audio.removeAttribute('src')
-  }
+  if (!audio) return
+  clearFade()
+  isFadeInPending = false
+  audio.src = ''
+  audio.removeAttribute('src')
 }
 
 export const isEmpty = (): boolean => !audio?.src
@@ -582,7 +662,10 @@ export const setMediaDeviceId = async (mediaDeviceId: string): Promise<void> => 
 }
 
 export const setVolume = (volume: number) => {
-  if (audio) audio.volume = volume
+  targetVolume = volume
+  // 渐变中或暂停时不直接改动音量，避免打断渐变/破坏下次渐入
+  if (!audio || fadeTimer != null || audio.paused) return
+  audio.volume = volume
 }
 
 export const getDuration = () => {
