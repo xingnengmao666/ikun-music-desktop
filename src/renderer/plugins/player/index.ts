@@ -176,6 +176,8 @@ let convolver: ConvolverNode
 let convolverSourceGainNode: GainNode
 let convolverOutputGainNode: GainNode
 let convolverDynamicsCompressor: DynamicsCompressorNode
+let compressorNode: DynamicsCompressorNode
+let compressorMakeupNode: GainNode
 let gainNode: GainNode
 let panner: PannerNode
 let pitchShifterNode: AudioWorkletNode
@@ -284,6 +286,93 @@ const initGain = () => {
   gainNode = audioContext.createGain()
 }
 
+const initCompressor = () => {
+  compressorNode = audioContext.createDynamicsCompressor()
+  // 默认直通：ratio 1 / threshold 0 不产生任何增益衰减
+  compressorNode.threshold.value = 0
+  compressorNode.knee.value = 0
+  compressorNode.ratio.value = 1
+  compressorNode.attack.value = 0.003
+  compressorNode.release.value = 0.25
+  compressorMakeupNode = audioContext.createGain()
+}
+
+// 压缩机：压缩动态范围（响的更安静）+ 慢速增益跟随（让每首歌响度接近）
+const COMPRESSOR_AGC_INTERVAL = 250
+const COMPRESSOR_AGC_TARGET_DB = -20
+const COMPRESSOR_AGC_MAX_GAIN_DB = 12
+const COMPRESSOR_AGC_SILENCE_DB = -60
+// 每次最多调整 2 dB，避免“喘气”一样的音量抖动
+const COMPRESSOR_AGC_MAX_STEP_DB = 2
+let compressorAmount = 0
+let compressorAgcTimer: ReturnType<typeof setInterval> | null = null
+let compressorAgcGainDb = 0
+
+const stopCompressorAgc = () => {
+  if (compressorAgcTimer == null) return
+  clearInterval(compressorAgcTimer)
+  compressorAgcTimer = null
+}
+
+const handleCompressorAgc = () => {
+  if (!audio || audio.paused || audio.muted) return
+  // ponytail: 每 tick 新建 256 长度的临时数组，不值得为它做复用池
+  const buf = new Float32Array(analyser.fftSize)
+  analyser.getFloatTimeDomainData(buf)
+  let sum = 0
+  for (const value of buf) sum += value * value
+  const rms = Math.sqrt(sum / buf.length)
+  if (rms <= 0) return
+  const db = 20 * Math.log10(rms)
+  // 静音/极弱段落不做增益提升，否则会在安静处把底噪拉起来
+  if (db < COMPRESSOR_AGC_SILENCE_DB) return
+  const step = Math.min(
+    Math.max(COMPRESSOR_AGC_TARGET_DB - db, -COMPRESSOR_AGC_MAX_STEP_DB),
+    COMPRESSOR_AGC_MAX_STEP_DB
+  )
+  compressorAgcGainDb = Math.min(
+    Math.max(compressorAgcGainDb + step, -COMPRESSOR_AGC_MAX_GAIN_DB),
+    COMPRESSOR_AGC_MAX_GAIN_DB
+  )
+  compressorMakeupNode.gain.setTargetAtTime(
+    10 ** (compressorAgcGainDb / 20),
+    audioContext.currentTime,
+    0.2
+  )
+}
+
+const startCompressorAgc = () => {
+  if (compressorAgcTimer != null) return
+  compressorAgcTimer = setInterval(handleCompressorAgc, COMPRESSOR_AGC_INTERVAL)
+}
+
+// amount: 0 = 关闭，100 = 最强
+export const setCompressor = (amount: number) => {
+  initAdvancedAudioFeatures()
+  compressorAmount = Math.min(Math.max(amount, 0), 100)
+  const strength = compressorAmount / 100
+  if (strength == 0) {
+    compressorNode.ratio.value = 1
+    compressorNode.threshold.value = 0
+    compressorNode.knee.value = 0
+    compressorAgcGainDb = 0
+    compressorMakeupNode.gain.setTargetAtTime(1, audioContext.currentTime, 0.2)
+    stopCompressorAgc()
+    return
+  }
+  compressorNode.threshold.value = -6 - 24 * strength
+  compressorNode.ratio.value = 1 + 11 * strength
+  compressorNode.knee.value = 6 + 24 * strength
+  startCompressorAgc()
+}
+
+// 换歌时把增益跟随重置到中位，让新歌重新自己找响度
+export const resetCompressorAgc = () => {
+  if (compressorAmount == 0 || compressorMakeupNode == null) return
+  compressorAgcGainDb = 0
+  compressorMakeupNode.gain.setTargetAtTime(1, audioContext.currentTime, 0.3)
+}
+
 const initAdvancedAudioFeatures = () => {
   if (audioContext) return
   if (!audio) throw new Error('audio not defined')
@@ -295,14 +384,17 @@ const initAdvancedAudioFeatures = () => {
   initConvolver()
   initPanner()
   initGain()
-  // source -> analyser -> biquadFilter -> pitchShifter -> [(convolver & convolverSource)->convolverDynamicsCompressor] -> panner -> gain
+  initCompressor()
+  // source -> analyser -> biquadFilter -> pitchShifter -> [(convolver & convolverSource)->convolverDynamicsCompressor] -> compressor -> panner -> gain
   mediaSource = audioContext.createMediaElementSource(audio)
   mediaSource.connect(analyser)
   analyser.connect(biquads.get(`hz${freqs[0]}`)!)
   const lastBiquadFilter = biquads.get(`hz${freqs.at(-1)!}`)!
   lastBiquadFilter.connect(convolverSourceGainNode)
   lastBiquadFilter.connect(convolver)
-  convolverDynamicsCompressor.connect(panner)
+  convolverDynamicsCompressor.connect(compressorNode)
+  compressorNode.connect(compressorMakeupNode)
+  compressorMakeupNode.connect(panner)
   panner.connect(gainNode)
   gainNode.connect(audioContext.destination)
 
@@ -572,6 +664,7 @@ export const hasInitedAdvancedAudioFeatures = (): boolean => audioContext != nul
 export const setResource = (src: string) => {
   if (!audio) return
   clearFade()
+  resetCompressorAgc()
   if (isVolumeFadeEnabled) {
     audio.volume = 0
     isFadeInPending = true

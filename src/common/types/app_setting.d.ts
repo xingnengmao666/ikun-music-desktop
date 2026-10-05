@@ -128,6 +128,11 @@ declare global {
       'player.isVolumeFade': boolean
 
       /**
+       * 压缩机强度，0 为关闭，100 为最强
+       */
+      'player.compressor': number
+
+      /**
        * 播放速率
        */
       'player.playbackRate': number
