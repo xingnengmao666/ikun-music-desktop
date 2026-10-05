@@ -114,16 +114,12 @@ export const createWindow = () => {
   if (global.envParams.cmdParams.dt)
     options.backgroundColor = theme.colors['--color-primary-light-1000']
   if (isWin) {
-    // WinUI3：不透明窗口 + 系统材质。Mica 需要 Win11 (build >= 22000)，
-    // 低版本或非 Win11 用主背景色的不透明兜底，避免出现黑窗。
-    // ponytail: 只判断 build 号，不做 UserAgent 探测；不够用再换 systemPreferences。
-    const buildNumber = Number(process.getSystemVersion().split('.')[2] ?? 0)
-    const useMica = buildNumber >= 22000
+    // WinUI3：不透明窗口。不用 Mica/亚克力——系统材质会把桌面透出来，
+    // 只在窗口还没绘制到的地方露出窗帘/桌面残影。
     options.transparent = false
     options.hasShadow = true
     options.roundedCorners = true
-    options.backgroundColor = useMica ? '#00000000' : theme.colors['--color-main-background']
-    if (useMica) options.backgroundMaterial = 'mica'
+    options.backgroundColor = theme.colors['--color-main-background']
   }
   if (global.lx.appSetting['common.startInFullscreen']) {
     options.fullscreen = true
