@@ -109,7 +109,7 @@ export default {
 
   button {
     width: 20px;
-    color: var(--color-font);
+    color: var(--artwork-font, var(--color-font));
   }
 
   .footerLeftControlBtn {
@@ -130,7 +130,7 @@ export default {
     }
 
     &.active {
-      color: var(--color-primary);
+      color: var(--artwork-accent, var(--color-primary));
       opacity: 0.8;
     }
   }

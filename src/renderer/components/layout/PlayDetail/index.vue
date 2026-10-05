@@ -1,8 +1,8 @@
 <template lang="pug">
 transition(enter-active-class="animated slideInRight" leave-active-class="animated slideOutDown" @after-enter="handleAfterEnter" @after-leave="handleAfterLeave")
-  div(v-if="isShowPlayerDetail" :class="[$style.container, { fullscreen: isFullscreen }]" @contextmenu="handleContextMenu")
+  div(v-if="isShowPlayerDetail" :class="[$style.container, { fullscreen: isFullscreen }]" :style="artworkForegroundStyle" @contextmenu="handleContextMenu")
     div(:class="$style.artworkBg" aria-hidden="true" :style="artworkStyle")
-    div(:class="$style.bg" :style="artworkVeilStyle")
+    div(:class="$style.bg")
     //- div(:class="$style.bg" :style="bgStyle")
     //- div(:class="$style.bg2")
     ControlBtnsLeftHeader(v-if="appSetting['common.controlBtnPosition'] == 'left'")
@@ -23,12 +23,12 @@ transition(enter-active-class="animated slideInRight" leave-active-class="animat
     transition(enter-active-class="animated fadeIn" leave-active-class="animated fadeOut")
       play-bar(v-if="visibled")
     transition(enter-active-class="animated-slow fadeIn" leave-active-class="animated-slow fadeOut")
-      common-audio-visualizer(v-if="appSetting['player.audioVisualization'] && visibled")
+      common-audio-visualizer(v-if="appSetting['player.audioVisualization'] && visibled" :color="artworkVisualizerColor")
 </template>
 
 <script>
 import { computed, ref, watch } from '@common/utils/vueTools'
-import { isFullscreen } from '@renderer/store'
+import { isFullscreen, themeShouldUseDarkColors } from '@renderer/store'
 import {
   isShowPlayerDetail,
   isShowPlayComment,
@@ -50,6 +50,9 @@ import { appSetting } from '@renderer/store/setting'
 import { colorsToCss, getArtworkColors } from '@renderer/utils/colorExtract'
 import {
   ARTWORK_SETTING_KEYS,
+  fitArtworkPalette,
+  getArtworkForeground,
+  getBackgroundModel,
   getDriftDuration,
   getMorphDuration,
   getVeilOpacity,
@@ -107,22 +110,60 @@ export default {
 
     // 播放详情页的动态背景：从当前歌曲封面上取色，只写进 CSS 变量，
     // 渐变的形状固定，换歌时由浏览器插值这几个颜色（详见 @renderer/utils/colorExtract）
-    const ARTWORK_TRANSPARENT = 'transparent'
-    const artworkColors = ref([
-      ARTWORK_TRANSPARENT,
-      ARTWORK_TRANSPARENT,
-      ARTWORK_TRANSPARENT,
-      ARTWORK_TRANSPARENT,
-    ])
+    const artworkPalette = ref([])
     let artworkToken = 0
+
+    // 主题里的颜色可能是 var() 引用，借一个探针元素让浏览器解析成 rgb()/rgba()
+    let colorProbe = null
+    const resolveColor = (value) => {
+      if (!value) return null
+      if (!colorProbe) {
+        colorProbe = document.createElement('span')
+        colorProbe.style.display = 'none'
+        document.body.appendChild(colorProbe)
+      }
+      colorProbe.style.color = value.trim()
+      const parts = getComputedStyle(colorProbe).color.match(/[\d.]+/g)
+      if (!parts || parts.length < 3) return null
+      const [r, g, b, a = 1] = parts.map(Number)
+      return { r, g, b, a }
+    }
+    const readThemeColor = (name) =>
+      resolveColor(getComputedStyle(document.documentElement).getPropertyValue(name))
+
+    /**
+     * 实际看到的背景 = 主题底色 + 遮罩，封面主色按背景浓度占其中的一部分。
+     * 文字色、进度条颜色都从同一份模型里算，渲染用的主色也取这里的 colors，
+     * 免得算对比度用一套、画背景用另一套（详见 @renderer/utils/artworkBackground）
+     */
+    const artworkTheme = computed(() => {
+      const palette = artworkPalette.value
+      if (!palette.length) return null
+      // 主题或深浅色模式变了都要重算底色
+      void appSetting['theme.id']
+      void themeShouldUseDarkColors.value
+      const mainBackground =
+        readThemeColor('--color-main-background') ?? readThemeColor('--color-content-background')
+      if (!mainBackground) return null
+      const appBackground = readThemeColor('--color-app-background') ?? mainBackground
+      const { base, gradientWeight } = getBackgroundModel(
+        mainBackground,
+        appBackground,
+        appSetting[ARTWORK_SETTING_KEYS.intensity]
+      )
+      // 主色明暗跨度太大时收一收，保证一定挑得出够对比的文字色
+      const colors = fitArtworkPalette(palette, base, gradientWeight)
+      return { colors, foreground: getArtworkForeground({ palette: colors, base, gradientWeight }) }
+    })
 
     const artworkStyle = computed(() => {
       const [zoomFrom, zoomTo] = getZoomRange(appSetting[ARTWORK_SETTING_KEYS.motion])
+      const colors = colorsToCss(artworkTheme.value?.colors ?? [])
       return {
-        '--artwork-c0': artworkColors.value[0],
-        '--artwork-c1': artworkColors.value[1],
-        '--artwork-c2': artworkColors.value[2],
-        '--artwork-c3': artworkColors.value[3],
+        '--artwork-c0': colors[0],
+        '--artwork-c1': colors[1],
+        '--artwork-c2': colors[2],
+        '--artwork-c3': colors[3],
         '--artwork-zoom-from': zoomFrom,
         '--artwork-zoom-to': zoomTo,
         '--artwork-speed': getDriftDuration(appSetting[ARTWORK_SETTING_KEYS.speed]),
@@ -130,21 +171,32 @@ export default {
       }
     })
 
-    // 没有取到色时把主题底色遮罩恢复成不透明，界面跟没开这个功能时一致
-    const artworkVeilStyle = computed(() => {
-      if (artworkColors.value[0] === ARTWORK_TRANSPARENT) return {}
+    // 没有取到色时不设这些变量，界面跟没开这个功能时一致
+    const artworkForegroundStyle = computed(() => {
+      const theme = artworkTheme.value
+      if (!theme) return {}
       const { veil, inner } = getVeilOpacity(appSetting[ARTWORK_SETTING_KEYS.intensity])
-      return { '--artwork-veil': veil, '--artwork-veil-inner': inner }
+      const { font, fontWeak, accent, accentA200, accentA400, accentA600, accentA800 } =
+        theme.foreground
+      return {
+        '--artwork-veil': veil,
+        '--artwork-veil-inner': inner,
+        '--artwork-font': font,
+        '--artwork-font-weak': fontWeak,
+        '--artwork-accent': accent,
+        '--artwork-accent-a200': accentA200,
+        '--artwork-accent-a400': accentA400,
+        '--artwork-accent-a600': accentA600,
+        '--artwork-accent-a800': accentA800,
+      }
     })
+
+    // 频谱条是 canvas 画的，拿不到 CSS 变量，算好的颜色直接传进去
+    const artworkVisualizerColor = computed(() => artworkTheme.value?.foreground.accentA800 ?? '')
 
     const clearArtworkBackground = () => {
       artworkToken++
-      artworkColors.value = [
-        ARTWORK_TRANSPARENT,
-        ARTWORK_TRANSPARENT,
-        ARTWORK_TRANSPARENT,
-        ARTWORK_TRANSPARENT,
-      ]
+      artworkPalette.value = []
     }
 
     const setArtworkBackground = async (pic) => {
@@ -152,11 +204,7 @@ export default {
       const colors = await getArtworkColors(pic)
       // 期间又换歌/关闭了，丢弃这次结果
       if (token !== artworkToken) return
-      if (!colors.length) {
-        clearArtworkBackground()
-        return
-      }
-      artworkColors.value = colorsToCss(colors)
+      artworkPalette.value = colors.length ? [...colors] : []
     }
 
     // 主题自带背景图时保留主题背景，不用封面取色覆盖它
@@ -187,7 +235,8 @@ export default {
     return {
       appSetting,
       artworkStyle,
-      artworkVeilStyle,
+      artworkForegroundStyle,
+      artworkVisualizerColor,
       playMusicInfo,
       isShowPlayerDetail,
       isShowPlayComment,
@@ -236,7 +285,8 @@ export default {
   // -webkit-app-region: drag;
   overflow: hidden;
   border-radius: @radius-border;
-  color: var(--color-font);
+  // 取到封面主色时用算出来的前景色，保证文字在动态背景上够清楚
+  color: var(--artwork-font, var(--color-font));
   // border-left: 12px solid var(--color-primary-alpha-900);
   -webkit-app-region: no-drag;
   contain: strict;
@@ -292,7 +342,7 @@ export default {
   // filter: blur(60px);
   opacity: 0.7;
   z-index: -1;
-  // 取到封面主色时减弱主题底色遮罩，让主色透出来（数值由 artworkVeilStyle 给出）
+  // 取到封面主色时减弱主题底色遮罩，让主色透出来（数值由 artworkForegroundStyle 给出）
   &:before {
     content: '';
     display: block;
