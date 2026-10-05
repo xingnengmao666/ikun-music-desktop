@@ -189,19 +189,31 @@ export const soundR = 0.5
 
 // 播放/暂停音量渐变
 const FADE_DURATION = 300
+// 切歌时的渐出，比播放/暂停慢一点，接歌才不会突然
+const SWITCH_FADE_DURATION = 400
 const FADE_INTERVAL = 10
 let targetVolume = 1
 let fadeTimer: ReturnType<typeof setInterval> | null = null
 let isFadeInPending = false
 let isVolumeFadeEnabled = true
 
+// 当前跑的这段渐出是不是「切歌/停止」的渐出。渐出期间旧曲还在出声，
+// 它的 playing / ended 事件描述的是旧曲，不能拿去驱动界面状态。
+let isSwitchFadeRunning = false
+
 const clearFade = () => {
+  isSwitchFadeRunning = false
   if (fadeTimer == null) return
   clearInterval(fadeTimer)
   fadeTimer = null
 }
 
-const fadeVolume = (to: number, onEnd?: () => void) => {
+const fadeVolume = (
+  to: number,
+  onEnd?: () => void,
+  duration = FADE_DURATION,
+  isSwitchFade = false
+) => {
   if (!audio) return
   clearFade()
   const from = audio.volume
@@ -209,18 +221,41 @@ const fadeVolume = (to: number, onEnd?: () => void) => {
     onEnd?.()
     return
   }
+  isSwitchFadeRunning = isSwitchFade
   const startTime = performance.now()
   fadeTimer = setInterval(() => {
     if (!audio) {
       clearFade()
       return
     }
-    const progress = Math.min((performance.now() - startTime) / FADE_DURATION, 1)
+    const progress = Math.min((performance.now() - startTime) / duration, 1)
     audio.volume = from + (to - from) * progress
     if (progress < 1) return
     clearFade()
     onEnd?.()
   }, FADE_INTERVAL)
+}
+
+// 切歌时要把「换源」推迟到渐出结束，否则音频会被硬切。
+// 挂起的新音源放在这里而不是塞进渐出的回调里：任何一处 clearFade 都可能把回调丢掉，
+// 存成数据后，暂停/播放/改设置时补一次 applyPendingSrc 就不会把新歌弄丢。
+let pendingSrc: string | null = null
+
+/** 是否处在「旧曲渐出、新曲还没接上」的过程中，这期间旧曲的音频事件要忽略 */
+export const isSwitchingAudioSource = () => isSwitchFadeRunning
+
+const applyPendingSrc = () => {
+  const src = pendingSrc
+  if (!audio || !src) return
+  pendingSrc = null
+  clearFade()
+  if (isVolumeFadeEnabled) {
+    audio.volume = 0
+    isFadeInPending = true
+  } else {
+    isFadeInPending = false
+  }
+  audio.src = src
 }
 
 export const setVolumeFadeEnabled = (enabled: boolean) => {
@@ -229,6 +264,7 @@ export const setVolumeFadeEnabled = (enabled: boolean) => {
   clearFade()
   isFadeInPending = false
   if (audio && !audio.paused) audio.volume = targetVolume
+  applyPendingSrc()
 }
 
 export const createAudio = () => {
@@ -663,17 +699,20 @@ export const hasInitedAdvancedAudioFeatures = (): boolean => audioContext != nul
 
 export const setResource = (src: string) => {
   if (!audio) return
-  clearFade()
   resetCompressorAgc()
-  if (isVolumeFadeEnabled) {
-    audio.volume = 0
-    isFadeInPending = true
+  pendingSrc = src
+  // 上一首还在放就先渐出，等音量到 0 再换源，接歌的接缝才不会是硬切
+  if (isVolumeFadeEnabled && !audio.paused) {
+    isFadeInPending = false
+    fadeVolume(0, applyPendingSrc, SWITCH_FADE_DURATION, true)
+    return
   }
-  audio.src = src
+  applyPendingSrc()
 }
 
 export const setPlay = () => {
   if (!audio) return
+  applyPendingSrc()
   if (!audio.paused) {
     // 暂停渐出未结束又重新播放时直接渐入
     isFadeInPending = false
@@ -693,7 +732,9 @@ export const setPlay = () => {
 }
 
 export const setPause = () => {
-  if (!audio || audio.paused) return
+  if (!audio) return
+  applyPendingSrc()
+  if (audio.paused) return
   if (!isVolumeFadeEnabled) {
     audio.pause()
     return
@@ -704,12 +745,24 @@ export const setPause = () => {
   })
 }
 
-export const setStop = () => {
+const stopAudio = () => {
   if (!audio) return
+  pendingSrc = null
   clearFade()
   isFadeInPending = false
   audio.src = ''
   audio.removeAttribute('src')
+}
+
+export const setStop = () => {
+  if (!audio) return
+  // 正在播放时先渐出再断源，停止/切歌都不会把声音一刀切掉
+  if (isVolumeFadeEnabled && !audio.paused) {
+    isFadeInPending = false
+    fadeVolume(0, stopAudio, SWITCH_FADE_DURATION, true)
+    return
+  }
+  stopAudio()
 }
 
 export const isEmpty = (): boolean => !audio?.src

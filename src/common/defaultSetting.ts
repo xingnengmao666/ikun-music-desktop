@@ -45,6 +45,7 @@ const defaultSetting: LX.AppSetting = {
   'player.isPlayLxlrc': !isMac,
   'player.isSavePlayTime': false,
   'player.audioVisualization': false,
+  'player.artworkColorBackground': true,
   'player.waitPlayEndStop': true,
   'player.waitPlayEndStopTime': '',
   'player.autoSkipOnError': true,
@@ -66,6 +67,11 @@ const defaultSetting: LX.AppSetting = {
   'player.soundEffect.panner.soundR': 5,
   'player.soundEffect.panner.speed': 25,
   'player.soundEffect.pitchShifter.playbackRate': 1,
+
+  'playDetail.artworkBackground.motion': 65,
+  'playDetail.artworkBackground.speed': 55,
+  'playDetail.artworkBackground.intensity': 60,
+  'playDetail.artworkBackground.duration': 45,
 
   'playDetail.isZoomActiveLrc': false,
   'playDetail.isShowLyricProgressSetting': false,

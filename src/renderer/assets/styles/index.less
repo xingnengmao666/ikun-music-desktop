@@ -666,3 +666,26 @@ table {
   transform: scale(0.3);
   opacity: 0;
 }
+
+// 播放详情页封面动态背景用的色标变量。注册成 <color> 后浏览器才会在换歌时
+// 平滑地插值这几个颜色（否则 background-image 里的渐变色只能硬切）。
+@property --artwork-c0 {
+  syntax: '<color>';
+  inherits: false;
+  initial-value: transparent;
+}
+@property --artwork-c1 {
+  syntax: '<color>';
+  inherits: false;
+  initial-value: transparent;
+}
+@property --artwork-c2 {
+  syntax: '<color>';
+  inherits: false;
+  initial-value: transparent;
+}
+@property --artwork-c3 {
+  syntax: '<color>';
+  inherits: false;
+  initial-value: transparent;
+}

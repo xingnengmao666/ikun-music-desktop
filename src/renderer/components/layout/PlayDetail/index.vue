@@ -1,7 +1,8 @@
 <template lang="pug">
 transition(enter-active-class="animated slideInRight" leave-active-class="animated slideOutDown" @after-enter="handleAfterEnter" @after-leave="handleAfterLeave")
   div(v-if="isShowPlayerDetail" :class="[$style.container, { fullscreen: isFullscreen }]" @contextmenu="handleContextMenu")
-    div(:class="$style.bg")
+    div(:class="$style.artworkBg" aria-hidden="true" :style="artworkStyle")
+    div(:class="$style.bg" :style="artworkVeilStyle")
     //- div(:class="$style.bg" :style="bgStyle")
     //- div(:class="$style.bg2")
     ControlBtnsLeftHeader(v-if="appSetting['common.controlBtnPosition'] == 'left'")
@@ -26,7 +27,7 @@ transition(enter-active-class="animated slideInRight" leave-active-class="animat
 </template>
 
 <script>
-import { ref, watch } from '@common/utils/vueTools'
+import { computed, ref, watch } from '@common/utils/vueTools'
 import { isFullscreen } from '@renderer/store'
 import {
   isShowPlayerDetail,
@@ -46,6 +47,14 @@ import ControlBtnsLeftHeader from './ControlBtnsLeftHeader.vue'
 import ControlBtnsRightHeader from './ControlBtnsRightHeader.vue'
 import { registerAutoHideMounse, unregisterAutoHideMounse } from './autoHideMounse'
 import { appSetting } from '@renderer/store/setting'
+import { colorsToCss, getArtworkColors } from '@renderer/utils/colorExtract'
+import {
+  ARTWORK_SETTING_KEYS,
+  getDriftDuration,
+  getMorphDuration,
+  getVeilOpacity,
+  getZoomRange,
+} from '@renderer/utils/artworkBackground'
 import { closeWindow, maxWindow, minWindow, setFullScreen } from '@renderer/utils/ipc'
 
 export default {
@@ -96,8 +105,89 @@ export default {
       ;(isFullscreen ? registerAutoHideMounse : unregisterAutoHideMounse)()
     })
 
+    // 播放详情页的动态背景：从当前歌曲封面上取色，只写进 CSS 变量，
+    // 渐变的形状固定，换歌时由浏览器插值这几个颜色（详见 @renderer/utils/colorExtract）
+    const ARTWORK_TRANSPARENT = 'transparent'
+    const artworkColors = ref([
+      ARTWORK_TRANSPARENT,
+      ARTWORK_TRANSPARENT,
+      ARTWORK_TRANSPARENT,
+      ARTWORK_TRANSPARENT,
+    ])
+    let artworkToken = 0
+
+    const artworkStyle = computed(() => {
+      const [zoomFrom, zoomTo] = getZoomRange(appSetting[ARTWORK_SETTING_KEYS.motion])
+      return {
+        '--artwork-c0': artworkColors.value[0],
+        '--artwork-c1': artworkColors.value[1],
+        '--artwork-c2': artworkColors.value[2],
+        '--artwork-c3': artworkColors.value[3],
+        '--artwork-zoom-from': zoomFrom,
+        '--artwork-zoom-to': zoomTo,
+        '--artwork-speed': getDriftDuration(appSetting[ARTWORK_SETTING_KEYS.speed]),
+        transitionDuration: getMorphDuration(appSetting[ARTWORK_SETTING_KEYS.duration]),
+      }
+    })
+
+    // 没有取到色时把主题底色遮罩恢复成不透明，界面跟没开这个功能时一致
+    const artworkVeilStyle = computed(() => {
+      if (artworkColors.value[0] === ARTWORK_TRANSPARENT) return {}
+      const { veil, inner } = getVeilOpacity(appSetting[ARTWORK_SETTING_KEYS.intensity])
+      return { '--artwork-veil': veil, '--artwork-veil-inner': inner }
+    })
+
+    const clearArtworkBackground = () => {
+      artworkToken++
+      artworkColors.value = [
+        ARTWORK_TRANSPARENT,
+        ARTWORK_TRANSPARENT,
+        ARTWORK_TRANSPARENT,
+        ARTWORK_TRANSPARENT,
+      ]
+    }
+
+    const setArtworkBackground = async (pic) => {
+      const token = ++artworkToken
+      const colors = await getArtworkColors(pic)
+      // 期间又换歌/关闭了，丢弃这次结果
+      if (token !== artworkToken) return
+      if (!colors.length) {
+        clearArtworkBackground()
+        return
+      }
+      artworkColors.value = colorsToCss(colors)
+    }
+
+    // 主题自带背景图时保留主题背景，不用封面取色覆盖它
+    const isThemeHasBackgroundImage = () => {
+      const value = getComputedStyle(document.documentElement)
+        .getPropertyValue('--background-image')
+        .trim()
+      return value != '' && value != 'none'
+    }
+
+    watch(
+      () => [
+        isShowPlayerDetail.value,
+        musicInfo.pic,
+        appSetting['player.artworkColorBackground'],
+        appSetting['theme.id'],
+      ],
+      ([isShow, pic, enabled]) => {
+        if (!isShow || !enabled || !pic || isThemeHasBackgroundImage()) {
+          clearArtworkBackground()
+          return
+        }
+        void setArtworkBackground(pic)
+      },
+      { immediate: true }
+    )
+
     return {
       appSetting,
+      artworkStyle,
+      artworkVeilStyle,
       playMusicInfo,
       isShowPlayerDetail,
       isShowPlayComment,
@@ -157,6 +247,39 @@ export default {
     box-sizing: border-box;
   }
 }
+// 封面取色的动态背景，垫在 .bg 的主题底色遮罩下面。
+// 渐变的形状固定，只有色标是可变的，换歌时 Chromium 会按 transition 平滑插值这几个颜色
+.artworkBg {
+  position: absolute;
+  top: -8%;
+  left: -8%;
+  width: 116%;
+  height: 116%;
+  z-index: -1;
+  pointer-events: none;
+  background-image: radial-gradient(120% 120% at 22% 12%, var(--artwork-c0) 0%, transparent 60%),
+    radial-gradient(110% 110% at 84% 86%, var(--artwork-c1) 0%, transparent 55%),
+    linear-gradient(160deg, var(--artwork-c2) 0%, var(--artwork-c3) 100%);
+  transition-property: --artwork-c0, --artwork-c1, --artwork-c2, --artwork-c3;
+  transition-duration: 1.6s;
+  transition-timing-function: ease-in-out;
+  animation: artwork-bg-drift var(--artwork-speed, 30s) ease-in-out infinite alternate;
+  will-change: transform;
+}
+@keyframes artwork-bg-drift {
+  from {
+    transform: scale(var(--artwork-zoom-from, 1.02)) translate3d(-1.6%, -1.2%, 0);
+  }
+  to {
+    transform: scale(var(--artwork-zoom-to, 1.14)) translate3d(1.8%, 2.2%, 0);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .artworkBg {
+    animation: none;
+  }
+}
+
 .bg {
   position: absolute;
   width: 100%;
@@ -169,12 +292,14 @@ export default {
   // filter: blur(60px);
   opacity: 0.7;
   z-index: -1;
+  // 取到封面主色时减弱主题底色遮罩，让主色透出来（数值由 artworkVeilStyle 给出）
   &:before {
     content: '';
     display: block;
     width: 100%;
     height: 100%;
     background-color: var(--color-app-background);
+    opacity: var(--artwork-veil-inner, 1);
   }
   &:after {
     position: absolute;
@@ -185,6 +310,7 @@ export default {
     width: 100%;
     height: 100%;
     background-color: var(--color-main-background);
+    opacity: var(--artwork-veil, 1);
   }
 }
 // .bg2 {

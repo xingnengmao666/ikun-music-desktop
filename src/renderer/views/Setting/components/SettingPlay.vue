@@ -7,6 +7,8 @@ dd
     base-checkbox(id="setting_player_volume_fade" :model-value="appSetting['player.isVolumeFade']" :label="$t('setting__play_volume_fade')" @update:model-value="updateSetting({ 'player.isVolumeFade': $event })")
     svg-icon(class="help-icon" name="help-circle-outline" :aria-label="$t('setting__play_volume_fade_tip')")
   .gap-top
+    base-checkbox(id="setting_player_artwork_color_background" :model-value="appSetting['player.artworkColorBackground']" :label="$t('setting__play_artwork_background')" @update:model-value="updateSetting({ 'player.artworkColorBackground': $event })")
+  .gap-top
     base-checkbox(id="setting_player_power_save_blocker" :model-value="appSetting['player.powerSaveBlocker']" :label="$t('setting__play_power_save_blocker')" @update:model-value="handleUpdatePowerSaveBlocker")
   .gap-top
     base-checkbox(id="setting_player_save_play_time" :model-value="appSetting['player.isSavePlayTime']" :label="$t('setting__play_save_play_time')" @update:model-value="updateSetting({ 'player.isSavePlayTime': $event })")
